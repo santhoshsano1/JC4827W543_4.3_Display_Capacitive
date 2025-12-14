@@ -15,6 +15,7 @@ const char* HA_TOKEN      = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJmZD
 
 // Home Assistant Entities
 #define LIGHT_ENTITY    "light.elk_bledob_161e"
+#define SWITCH_ENTITY_2    "switch.0xa4c138c2343f08b8"
 #define SWITCH_ENTITY   "switch.0xa4c138065f5259eb"
 #define PRESENCE_SENSOR "binary_sensor.esphome_web_214ba4_presence"
 #define HUMIDITY_SENSOR "sensor.bthome_sensor_5986_humidity"
@@ -29,6 +30,11 @@ const char* HA_TOKEN      = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJmZD
 #define TOUCH_WIDTH 480
 #define TOUCH_HEIGHT 272
 TAMC_GT911 touchController = TAMC_GT911(TOUCH_SDA, TOUCH_SCL, TOUCH_INT, TOUCH_RST, TOUCH_WIDTH, TOUCH_HEIGHT);
+
+#define LCD_BL 1
+const int freq = 5000;
+const int resolution = 8;
+
 
 // Display global variables
 uint32_t screenWidth;
@@ -115,6 +121,14 @@ static void btn_light_cb(lv_event_t *e) {
         xQueueSend(haQueue, &req, 0);
     }
 }
+
+static void btn_switch_cb_2(lv_event_t *e) {
+    if(lv_event_get_code(e) == LV_EVENT_CLICKED) {
+        HARequest req = {SWITCH_ENTITY_2};
+        xQueueSend(haQueue, &req, 0);
+    }
+}
+
 static void btn_switch_cb(lv_event_t *e) {
     if(lv_event_get_code(e) == LV_EVENT_CLICKED) {
         HARequest req = {SWITCH_ENTITY};
@@ -146,70 +160,112 @@ void sensorTask(void *pvParameters) {
 void setup() {
     Serial.begin(115200);
 
-    // Init display
+    // ---------------- Init Display ----------------
     if(!gfx->begin()) while(true);
-    pinMode(GFX_BL, OUTPUT); digitalWrite(GFX_BL, HIGH);
+
+    pinMode(GFX_BL, OUTPUT);
+    //digitalWrite(GFX_BL, HIGH);
+    ledcAttach(GFX_BL, freq, resolution);
     gfx->fillScreen(RGB565_BLACK);
 
-    // Touch
+    // ---------------- Touch ----------------
     touchController.begin();
     touchController.setRotation(ROTATION_INVERTED);
 
-    // LVGL
-    lv_init(); lv_tick_set_cb(millis_cb);
-    screenWidth = gfx->width(); screenHeight = gfx->height();
+    // ---------------- LVGL ----------------
+    lv_init();
+    lv_tick_set_cb(millis_cb);
+
+    screenWidth  = gfx->width();
+    screenHeight = gfx->height();
+
     bufSize = screenWidth * 40;
-    disp_draw_buf = (lv_color_t *)heap_caps_malloc(bufSize * 2, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    if(!disp_draw_buf) disp_draw_buf = (lv_color_t *)heap_caps_malloc(bufSize * 2, MALLOC_CAP_8BIT);
+    disp_draw_buf = (lv_color_t *)heap_caps_malloc(bufSize * sizeof(lv_color_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if(!disp_draw_buf) while(true);
+
     disp = lv_display_create(screenWidth, screenHeight);
     lv_display_set_flush_cb(disp, my_disp_flush);
-    lv_display_set_buffers(disp, disp_draw_buf, NULL, bufSize * 2, LV_DISPLAY_RENDER_MODE_PARTIAL);
+    lv_display_set_buffers(disp, disp_draw_buf, NULL, bufSize * sizeof(lv_color_t), LV_DISPLAY_RENDER_MODE_PARTIAL);
 
     lv_indev_t *indev = lv_indev_create();
     lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
     lv_indev_set_read_cb(indev, my_touchpad_read);
 
-    // Buttons
-    lv_obj_t *btn_light = lv_button_create(lv_screen_active());
-    lv_obj_set_size(btn_light, 120, 50);
-    lv_obj_align(btn_light, LV_ALIGN_TOP_LEFT, 20, 20);
-    lv_obj_add_event_cb(btn_light, btn_light_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *lbl_btn_light = lv_label_create(btn_light);
-    lv_label_set_text(lbl_btn_light, "Light"); lv_obj_center(lbl_btn_light);
+    // ================= UI LAYOUT =================
+    lv_obj_t *main_container = lv_obj_create(lv_scr_act());
+    lv_obj_set_size(main_container, screenWidth, screenHeight);
+    lv_obj_remove_style_all(main_container);
 
-    lv_obj_t *btn_switch = lv_button_create(lv_screen_active());
-    lv_obj_set_size(btn_switch, 120, 50);
-    lv_obj_align(btn_switch, LV_ALIGN_TOP_RIGHT, -20, 20);
-    lv_obj_add_event_cb(btn_switch, btn_switch_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *lbl_btn_switch = lv_label_create(btn_switch);
-    lv_label_set_text(lbl_btn_switch, "Switch"); lv_obj_center(lbl_btn_switch);
+    // -------- Grid setup --------
+    // Left column: buttons, Right column: labels
+    static lv_coord_t col_dsc[] = { LV_GRID_FR(3), LV_GRID_FR(2), LV_GRID_TEMPLATE_LAST };
 
-    // Labels
-    lbl_presence = lv_label_create(lv_screen_active());
-    lv_label_set_text(lbl_presence, "Presence: unknown");
-    lv_obj_align(lbl_presence, LV_ALIGN_TOP_MID, 0, 100);
+    // Rows: 3 buttons + 4 labels, give each a fixed size for clarity
+    static lv_coord_t row_dsc[] = {
+        70, 70, 70, 50, 50, 50, 50, LV_GRID_TEMPLATE_LAST
+    };
 
-    lbl_humidity = lv_label_create(lv_screen_active());
-    lv_label_set_text(lbl_humidity, "Humidity: unknown");
-    lv_obj_align(lbl_humidity, LV_ALIGN_TOP_MID, 0, 130);
+    lv_obj_set_grid_dsc_array(main_container, col_dsc, row_dsc);
 
-    lbl_temperature = lv_label_create(lv_screen_active());
-    lv_label_set_text(lbl_temperature, "Temperature: unknown");
-    lv_obj_align(lbl_temperature, LV_ALIGN_TOP_MID, 0, 160);
+    // -------- Button helper --------
+    auto createButtonWithSymbol = [](lv_obj_t* parent, const char* symbol, const char* text, lv_event_cb_t cb) {
+        lv_obj_t *btn = lv_btn_create(parent);
+        lv_obj_set_size(btn, LV_PCT(90), LV_PCT(90));
+        lv_obj_set_style_radius(btn, 10, 0);
+        lv_obj_set_style_bg_color(btn, lv_color_hex(0x1E1E1E), 0);
+        lv_obj_set_style_shadow_width(btn, 6, 0);
+        lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, NULL);
 
-    lbl_moving = lv_label_create(lv_screen_active());
-    lv_label_set_text(lbl_moving, "Moving: unknown");
-    lv_obj_align(lbl_moving, LV_ALIGN_TOP_MID, 0, 190);
+        lv_obj_t *lbl = lv_label_create(btn);
+        lv_label_set_text(lbl, (String(symbol) + " " + text).c_str());
+        lv_obj_center(lbl);
+        lv_obj_set_style_text_color(lbl, lv_color_white(), 0);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_16, 0);
+        return btn;
+    };
 
-    // Wi-Fi
+    // -------- Create buttons --------
+    lv_obj_t *btn_light  = createButtonWithSymbol(main_container, LV_SYMBOL_CHARGE, "Light", btn_light_cb);
+    lv_obj_t *btn_switch1 = createButtonWithSymbol(main_container, LV_SYMBOL_POWER, "Switch 1", btn_switch_cb);
+    lv_obj_t *btn_switch2 = createButtonWithSymbol(main_container, LV_SYMBOL_POWER, "Switch 2", btn_switch_cb_2);
+
+    // Place buttons in left column
+    lv_obj_set_grid_cell(btn_light,   LV_GRID_ALIGN_CENTER, 0, 1, LV_GRID_ALIGN_CENTER, 0, 1);
+    lv_obj_set_grid_cell(btn_switch1, LV_GRID_ALIGN_CENTER, 0, 1, LV_GRID_ALIGN_CENTER, 1, 1);
+    lv_obj_set_grid_cell(btn_switch2, LV_GRID_ALIGN_CENTER, 0, 1, LV_GRID_ALIGN_CENTER, 2, 1);
+
+    // -------- Create labels --------
+    lbl_presence    = lv_label_create(main_container); lv_label_set_text(lbl_presence, "Presence: unknown");
+    lbl_humidity    = lv_label_create(main_container); lv_label_set_text(lbl_humidity, "Humidity: unknown");
+    lbl_temperature = lv_label_create(main_container); lv_label_set_text(lbl_temperature, "Temperature: unknown");
+    lbl_moving      = lv_label_create(main_container); lv_label_set_text(lbl_moving, "Moving: unknown");
+
+    // Place labels in right column
+    lv_obj_set_grid_cell(lbl_presence,    LV_GRID_ALIGN_START, 1, 1, LV_GRID_ALIGN_CENTER, 0, 1);
+    lv_obj_set_grid_cell(lbl_humidity,    LV_GRID_ALIGN_START, 1, 1, LV_GRID_ALIGN_CENTER, 1, 1);
+    lv_obj_set_grid_cell(lbl_temperature, LV_GRID_ALIGN_START, 1, 1, LV_GRID_ALIGN_CENTER, 2, 1);
+    lv_obj_set_grid_cell(lbl_moving,      LV_GRID_ALIGN_START, 1, 1, LV_GRID_ALIGN_CENTER, 3, 1);
+
+    lv_obj_set_style_text_color(main_container, lv_color_white(), 0);
+    lv_obj_set_style_text_font(main_container, &lv_font_montserrat_16, 0);
+
+    // ---------------- Wi-Fi ----------------
     wifiConnect();
 
-    // Create FreeRTOS queue and tasks
+    // ---------------- FreeRTOS ----------------
     haQueue = xQueueCreate(10, sizeof(HARequest));
     xTaskCreatePinnedToCore(haTask, "HA Task", 4096, NULL, 1, NULL, 1);
     xTaskCreatePinnedToCore(sensorTask, "Sensor Task", 4096, NULL, 1, NULL, 1);
 
-    Serial.println("Setup done, ready to control Home Assistant via HTTP");
+    Serial.println("Setup complete – UI ready");
+
+    setBrightness(60);
+}
+
+
+void setBrightness(uint8_t value)
+{
+  ledcWrite(GFX_BL, value);
 }
 
 // ---------------- Loop -----------------
