@@ -49,6 +49,15 @@ lv_obj_t *lbl_humidity;
 lv_obj_t *lbl_temperature;
 lv_obj_t *lbl_moving;
 
+struct SensorData {
+    String presence;
+    String humidity;
+    String temperature;
+    String moving;
+};
+
+SensorData sensorData;
+
 // ---------------- FreeRTOS Queue for HTTP -----------------
 struct HARequest { const char* entity_id; };
 QueueHandle_t haQueue;
@@ -62,6 +71,13 @@ void my_disp_flush(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
     uint32_t h = lv_area_get_height(area);
     gfx->draw16bitRGBBitmap(area->x1, area->y1, (uint16_t *)px_map, w, h);
     lv_disp_flush_ready(disp);
+}
+
+void updateLabels(void* param) {
+    lv_label_set_text(lbl_presence, sensorData.presence.c_str());
+    lv_label_set_text(lbl_humidity, sensorData.humidity.c_str());
+    lv_label_set_text(lbl_temperature, sensorData.temperature.c_str());
+    lv_label_set_text(lbl_moving, sensorData.moving.c_str());
 }
 
 void my_touchpad_read(lv_indev_t *indev, lv_indev_data_t *data) {
@@ -136,6 +152,8 @@ static void btn_switch_cb(lv_event_t *e) {
     }
 }
 
+
+
 // ---------------- FreeRTOS Tasks -----------------
 void haTask(void *pvParameters) {
     HARequest req;
@@ -146,15 +164,19 @@ void haTask(void *pvParameters) {
     }
 }
 
-void sensorTask(void *pvParameters) {
+void sensorTask(void* pvParameters) {
     while(true) {
-        lv_label_set_text(lbl_presence, ("Presence: " + haGetState(PRESENCE_SENSOR)).c_str());
-        lv_label_set_text(lbl_humidity, ("Humidity: " + haGetState(HUMIDITY_SENSOR)).c_str());
-        lv_label_set_text(lbl_temperature, ("Temperature: " + haGetState(TEMP_SENSOR)).c_str());
-        lv_label_set_text(lbl_moving, ("Moving: " + haGetState(MOVING_SENSOR)).c_str());
-        vTaskDelay(5000 / portTICK_PERIOD_MS); // refresh every 5s
+        sensorData.presence    = "Presence: "  + haGetState(PRESENCE_SENSOR);
+        sensorData.humidity    = "Humidity: "  + haGetState(HUMIDITY_SENSOR);
+        sensorData.temperature = "Temperature: " + haGetState(TEMP_SENSOR);
+        sensorData.moving      = "Moving: "    + haGetState(MOVING_SENSOR);
+
+        lv_async_call(updateLabels, nullptr); // safe update in LVGL task
+
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
     }
 }
+
 
 // ---------------- Setup -----------------
 void setup() {
@@ -162,9 +184,7 @@ void setup() {
 
     // ---------------- Init Display ----------------
     if(!gfx->begin()) while(true);
-
     pinMode(GFX_BL, OUTPUT);
-    //digitalWrite(GFX_BL, HIGH);
     ledcAttach(GFX_BL, freq, resolution);
     gfx->fillScreen(RGB565_BLACK);
 
@@ -178,7 +198,6 @@ void setup() {
 
     screenWidth  = gfx->width();
     screenHeight = gfx->height();
-
     bufSize = screenWidth * 40;
     disp_draw_buf = (lv_color_t *)heap_caps_malloc(bufSize * sizeof(lv_color_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if(!disp_draw_buf) while(true);
@@ -191,76 +210,81 @@ void setup() {
     lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
     lv_indev_set_read_cb(indev, my_touchpad_read);
 
-    // ================= UI LAYOUT =================
-    lv_obj_t *main_container = lv_obj_create(lv_scr_act());
-    lv_obj_set_size(main_container, screenWidth, screenHeight);
-    lv_obj_remove_style_all(main_container);
-
-    // -------- Grid setup --------
-    // Left column: buttons, Right column: labels
-    static lv_coord_t col_dsc[] = { LV_GRID_FR(3), LV_GRID_FR(2), LV_GRID_TEMPLATE_LAST };
-
-    // Rows: 3 buttons + 4 labels, give each a fixed size for clarity
-    static lv_coord_t row_dsc[] = {
-        70, 70, 70, 50, 50, 50, 50, LV_GRID_TEMPLATE_LAST
-    };
-
-    lv_obj_set_grid_dsc_array(main_container, col_dsc, row_dsc);
-
-    // -------- Button helper --------
-    auto createButtonWithSymbol = [](lv_obj_t* parent, const char* symbol, const char* text, lv_event_cb_t cb) {
-        lv_obj_t *btn = lv_btn_create(parent);
-        lv_obj_set_size(btn, LV_PCT(90), LV_PCT(90));
-        lv_obj_set_style_radius(btn, 10, 0);
-        lv_obj_set_style_bg_color(btn, lv_color_hex(0x1E1E1E), 0);
-        lv_obj_set_style_shadow_width(btn, 6, 0);
-        lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, NULL);
-
-        lv_obj_t *lbl = lv_label_create(btn);
-        lv_label_set_text(lbl, (String(symbol) + " " + text).c_str());
-        lv_obj_center(lbl);
-        lv_obj_set_style_text_color(lbl, lv_color_white(), 0);
-        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_16, 0);
-        return btn;
-    };
-
-    // -------- Create buttons --------
-    lv_obj_t *btn_light  = createButtonWithSymbol(main_container, LV_SYMBOL_CHARGE, "Light", btn_light_cb);
-    lv_obj_t *btn_switch1 = createButtonWithSymbol(main_container, LV_SYMBOL_POWER, "Switch 1", btn_switch_cb);
-    lv_obj_t *btn_switch2 = createButtonWithSymbol(main_container, LV_SYMBOL_POWER, "Switch 2", btn_switch_cb_2);
-
-    // Place buttons in left column
-    lv_obj_set_grid_cell(btn_light,   LV_GRID_ALIGN_CENTER, 0, 1, LV_GRID_ALIGN_CENTER, 0, 1);
-    lv_obj_set_grid_cell(btn_switch1, LV_GRID_ALIGN_CENTER, 0, 1, LV_GRID_ALIGN_CENTER, 1, 1);
-    lv_obj_set_grid_cell(btn_switch2, LV_GRID_ALIGN_CENTER, 0, 1, LV_GRID_ALIGN_CENTER, 2, 1);
-
-    // -------- Create labels --------
-    lbl_presence    = lv_label_create(main_container); lv_label_set_text(lbl_presence, "Presence: unknown");
-    lbl_humidity    = lv_label_create(main_container); lv_label_set_text(lbl_humidity, "Humidity: unknown");
-    lbl_temperature = lv_label_create(main_container); lv_label_set_text(lbl_temperature, "Temperature: unknown");
-    lbl_moving      = lv_label_create(main_container); lv_label_set_text(lbl_moving, "Moving: unknown");
-
-    // Place labels in right column
-    lv_obj_set_grid_cell(lbl_presence,    LV_GRID_ALIGN_START, 1, 1, LV_GRID_ALIGN_CENTER, 0, 1);
-    lv_obj_set_grid_cell(lbl_humidity,    LV_GRID_ALIGN_START, 1, 1, LV_GRID_ALIGN_CENTER, 1, 1);
-    lv_obj_set_grid_cell(lbl_temperature, LV_GRID_ALIGN_START, 1, 1, LV_GRID_ALIGN_CENTER, 2, 1);
-    lv_obj_set_grid_cell(lbl_moving,      LV_GRID_ALIGN_START, 1, 1, LV_GRID_ALIGN_CENTER, 3, 1);
-
-    lv_obj_set_style_text_color(main_container, lv_color_white(), 0);
-    lv_obj_set_style_text_font(main_container, &lv_font_montserrat_16, 0);
-
     // ---------------- Wi-Fi ----------------
     wifiConnect();
+
+    // ---------------- GRID CONTAINER ----------------
+    static int32_t col_dsc[] = {LV_GRID_FR(1), LV_GRID_FR(2), LV_GRID_TEMPLATE_LAST}; // Left 1 unit, right 2 units
+    static int32_t row_dsc[] = {LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_TEMPLATE_LAST};
+
+    lv_obj_t *cont = lv_obj_create(lv_scr_act());
+    lv_obj_set_size(cont, screenWidth, screenHeight);
+    lv_obj_set_grid_dsc_array(cont, col_dsc, row_dsc);
+
+    // ---------------- BUTTONS ----------------
+    lv_obj_t *btn_light = lv_btn_create(cont);
+    lv_obj_set_grid_cell(btn_light, LV_GRID_ALIGN_STRETCH, 0, 1, LV_GRID_ALIGN_STRETCH, 0, 1);
+    lv_obj_t *lbl1 = lv_label_create(btn_light);
+    lv_label_set_text(lbl1, (String(LV_SYMBOL_CHARGE) + " LED Strip").c_str());
+    lv_obj_center(lbl1);
+    lv_obj_add_event_cb(btn_light, btn_light_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *btn_switch1 = lv_btn_create(cont);
+    lv_obj_set_grid_cell(btn_switch1, LV_GRID_ALIGN_STRETCH, 0, 1, LV_GRID_ALIGN_STRETCH, 1, 1);
+    lv_obj_t *lbl2 = lv_label_create(btn_switch1);
+    lv_label_set_text(lbl2, (String(LV_SYMBOL_POWER) + " Heater").c_str());
+    lv_obj_center(lbl2);
+    lv_obj_add_event_cb(btn_switch1, btn_switch_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *btn_switch2 = lv_btn_create(cont);
+    lv_obj_set_grid_cell(btn_switch2, LV_GRID_ALIGN_STRETCH, 0, 1, LV_GRID_ALIGN_STRETCH, 2, 1);
+    lv_obj_t *lbl3 = lv_label_create(btn_switch2);
+    lv_label_set_text(lbl3, (String(LV_SYMBOL_POWER) + " Ceiling Light").c_str());
+    lv_obj_center(lbl3);
+    lv_obj_add_event_cb(btn_switch2, btn_switch_cb_2, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *slider_brightness = lv_slider_create(cont);
+    lv_slider_set_range(slider_brightness, 0, 255);   // PWM 0–255
+    lv_slider_set_value(slider_brightness, 60, LV_ANIM_OFF);
+    lv_obj_set_grid_cell(slider_brightness, LV_GRID_ALIGN_STRETCH, 0, 1, LV_GRID_ALIGN_START, 3, 1);
+
+    lv_obj_t *lbl_slider = lv_label_create(cont);
+    lv_label_set_text(lbl_slider, "Brightness");
+    lv_obj_set_grid_cell(lbl_slider, LV_GRID_ALIGN_START, 0, 1, LV_GRID_ALIGN_END, 3, 1);
+
+    lv_obj_add_event_cb(slider_brightness, [](lv_event_t *e){
+    lv_obj_t *s = (lv_obj_t *)lv_event_get_target(e); // explicit cast
+    int val = lv_slider_get_value(s);
+    setBrightness(val);
+    }, LV_EVENT_VALUE_CHANGED, NULL);
+
+
+    // ---------------- LABELS ----------------
+    lbl_presence = lv_label_create(cont);
+    lv_label_set_text(lbl_presence, "Presence: unknown");
+    lv_obj_set_grid_cell(lbl_presence, LV_GRID_ALIGN_START, 1, 1, LV_GRID_ALIGN_STRETCH, 0, 1);
+
+    lbl_humidity = lv_label_create(cont);
+    lv_label_set_text(lbl_humidity, "Humidity: unknown");
+    lv_obj_set_grid_cell(lbl_humidity, LV_GRID_ALIGN_START, 1, 1, LV_GRID_ALIGN_STRETCH, 1, 1);
+
+    lbl_temperature = lv_label_create(cont);
+    lv_label_set_text(lbl_temperature, "Temperature: unknown");
+    lv_obj_set_grid_cell(lbl_temperature, LV_GRID_ALIGN_START, 1, 1, LV_GRID_ALIGN_STRETCH, 2, 1);
+
+    lbl_moving = lv_label_create(cont);
+    lv_label_set_text(lbl_moving, "Moving: unknown");
+    lv_obj_set_grid_cell(lbl_moving, LV_GRID_ALIGN_START, 1, 1, LV_GRID_ALIGN_STRETCH, 3, 1);
 
     // ---------------- FreeRTOS ----------------
     haQueue = xQueueCreate(10, sizeof(HARequest));
     xTaskCreatePinnedToCore(haTask, "HA Task", 4096, NULL, 1, NULL, 1);
     xTaskCreatePinnedToCore(sensorTask, "Sensor Task", 4096, NULL, 1, NULL, 1);
 
-    Serial.println("Setup complete – UI ready");
-
+    Serial.println("Setup complete – grid UI ready");
     setBrightness(60);
 }
+
 
 
 void setBrightness(uint8_t value)
